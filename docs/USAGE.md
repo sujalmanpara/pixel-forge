@@ -1,4 +1,4 @@
-# Pixel Forge — Detailed Usage Guide
+# figma-perfect
 
 **Convert Figma designs to pixel-perfect code using the Figma REST API. No MCP required.**
 
@@ -9,6 +9,27 @@ Use this skill when:
 - User asks to extract Figma tokens, colors, fonts, or spacing values
 
 **Does NOT use MCP** — works entirely via Figma REST API + Python scripts.
+
+---
+
+## Philosophy: Save Tokens, Keep Quality
+
+This skill is designed to **minimize LLM token usage while maximizing output quality.**
+
+```
+Layer 1: Algorithm (generate.py) → 85%+ accuracy, ZERO tokens
+Layer 2: LLM refinement → targeted fixes only, minimal tokens → 92%+
+Layer 3: User wants more? → Structured refinement via validate-loop
+          (section scores tell you EXACTLY what’s wrong → fix only that)
+```
+
+**Why this is better than raw prompting:**
+- Raw prompt: "build this Figma" → LLM generates everything from scratch → 300k+ tokens, inconsistent
+- This skill: algorithm handles mechanical work, LLM does only judgment → 50-80k tokens, structured
+
+**The rule:** Never use LLM tokens for work that rules can handle. Colors, spacing, flexbox, fonts — that's math, not intelligence. Reserve the LLM for: what looks wrong, what should be interactive, how to fix ambiguous layouts.
+
+**For users refining further:** The validate-loop gives per-section scores so you know EXACTLY which section needs work and why. One targeted prompt ("fix the footer spacing") beats ten blind ones ("make it more accurate").
 
 ---
 
