@@ -58,7 +58,7 @@ References:
 
 Set `SKILL_DIR` at the start of every session:
 ```bash
-SKILL_DIR=./  # path to pixel-forge root
+SKILL_DIR=./
 ```
 
 ---

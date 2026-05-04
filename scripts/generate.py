@@ -51,7 +51,11 @@ def sanitize_class(node):
     nid = node.get("id", "0-0").replace(":", "-").replace(";", "-")
     # Remove any remaining invalid CSS identifier chars
     nid = "".join(c if c.isalnum() or c == "-" else "-" for c in nid)
-    return f"fig-{name}-{nid}"
+    # Edge case: truncate long class names (some Figma nodes have very long names)
+    full = f"fig-{name}-{nid}"
+    if len(full) > 60:
+        full = full[:57] + nid[-3:] if len(nid) >= 3 else full[:60]
+    return full
 
 
 def to_pascal_case(name):
@@ -90,9 +94,20 @@ def figma_align_to_css(value, axis="primary"):
     return mapping.get(value, "flex-start")
 
 
+def escape_jsx_text(text):
+    """Escape special characters for JSX text content.
+    Handles <, >, &, {, } which have special meaning in JSX."""
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Edge case: { and } are JSX expression delimiters — must escape them
+    text = text.replace("{", "{'{'}")
+    text = text.replace("}", "{'}'}")
+    return text
+
+
 def asset_path_for_node(node_id, assets_dir):
     """Check if an asset image exists for the given node ID."""
-    sanitized = node_id.replace(":", "-")
+    # Edge case: Figma IDs may contain semicolons (e.g. I457360;111468207)
+    sanitized = node_id.replace(":", "-").replace(";", "-")
     for candidate in [f"{sanitized}.png", f"{node_id}.png", f"{sanitized}.jpg", f"{node_id}.jpg"]:
         if os.path.exists(os.path.join(assets_dir, candidate)):
             return candidate  # Return just filename, caller adds prefix
@@ -835,8 +850,8 @@ def render_node_jsx(node, parent, collector, assets_dir, css_rules, depth=0, use
         characters = node.get("characters", "")
         font_size = node.get("style", {}).get("fontSize", 16)
         tag = text_tag(font_size)
-        # Escape for JSX
-        text = characters.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Edge case: escape special chars for JSX ({, }, <, >, &)
+        text = escape_jsx_text(characters)
         # Preserve newlines with <br />
         text = text.replace("\n", "<br />\n")
         return f'{indent}<{tag} className="{class_attr}">{text}</{tag}>\n'
@@ -917,12 +932,14 @@ def render_node_tsx_module(node, parent, collector, assets_dir, css_rules, depth
         characters = node.get("characters", "")
         font_size = node.get("style", {}).get("fontSize", 16)
         tag = text_tag(font_size)
-        text = characters.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Edge case: escape special chars for JSX ({, }, <, >, &)
+        text = escape_jsx_text(characters)
         text = text.replace("\n", "<br />\n")
         return f'{indent}<{tag} className={class_attr_expr}>{text}</{tag}>\n'
 
     elif ntype == "VECTOR":
-        return f'{indent}<div className={class_attr_expr} aria-hidden="true" />\n'
+        # Edge case: use explicit close tag instead of self-closing <div />
+        return f'{indent}<div className={class_attr_expr} aria-hidden="true"></div>\n'
 
     elif ntype == "RECTANGLE":
         for fill in node.get("fills", []):
@@ -930,7 +947,8 @@ def render_node_tsx_module(node, parent, collector, assets_dir, css_rules, depth
                 img_file = asset_path_for_node(node.get("id", ""), assets_dir)
                 if img_file:
                     return f'{indent}<img className={class_attr_expr} src="{img_prefix}{img_file}" alt="{node.get("name", "")}" />\n'
-        return f'{indent}<div className={class_attr_expr} />\n'
+        # Edge case: use explicit close tag instead of self-closing <div />
+        return f'{indent}<div className={class_attr_expr}></div>\n'
 
     elif ntype in ("FRAME", "INSTANCE"):
         for fill in node.get("fills", []):
@@ -942,7 +960,8 @@ def render_node_tsx_module(node, parent, collector, assets_dir, css_rules, depth
 
         children = node.get("children", [])
         if not children:
-            return f'{indent}<div className={class_attr_expr} />\n'
+            # Edge case: use explicit close tag instead of self-closing <div />
+            return f'{indent}<div className={class_attr_expr}></div>\n'
 
         tsx = f'{indent}<div className={class_attr_expr}>\n'
         for child in children:
@@ -1295,7 +1314,8 @@ export default function {pascal}() {{
 """
             with open(c_dir / "index.tsx", "w") as f:
                 f.write(wrapper_tsx)
-            _write_css_module(c_dir / "styles.module.css", wrapper_css_rules)
+            # Edge case: pass nextjs=True so url(assets/...) becomes url(/assets/...)
+            _write_css_module(c_dir / "styles.module.css", wrapper_css_rules, nextjs=True)
         else:
             css_rules = OrderedDict()
             tsx_body = render_node_tsx_module(node, None, collector, assets_dir, css_rules, depth=3, use_tailwind=use_tailwind, color_map=color_map, img_prefix="/assets/")
@@ -1501,10 +1521,8 @@ module.exports = nextConfig;
     with open(output_dir / "next.config.js", "w") as f:
         f.write(next_config)
 
-    # Placeholder favicon
-    with open(app_dir / "favicon.ico", "wb") as f:
-        # Minimal valid ICO header (empty)
-        f.write(b'\x00\x00\x01\x00\x00\x00')
+    # Edge case: skip favicon.ico — generating an empty/invalid ICO causes errors
+    # Next.js works fine without one; users can add their own later
 
     return components
 
@@ -1516,9 +1534,16 @@ def _write_nextjs_component(c_dir, pascal, tsx_body, css_rules, use_tailwind):
     has_styles = bool(css_rules)
     import_line = "import styles from './styles.module.css';" if has_styles else ""
 
-    # Always use a single div wrapper to avoid multi-root JSX errors
-    # Re-indent tsx_body to be inside the wrapper
-    indented_body = '\n'.join('  ' + line if line.strip() else line for line in tsx_body.split('\n'))
+    # Edge case: always wrap in single <div> to avoid multi-root JSX errors
+    # Re-indent tsx_body lines to sit cleanly inside the wrapper
+    body_lines = tsx_body.rstrip('\n').split('\n')
+    indented_lines = []
+    for line in body_lines:
+        if line.strip():  # non-empty lines get proper indentation
+            indented_lines.append('      ' + line.lstrip())
+        else:
+            indented_lines.append('')
+    indented_body = '\n'.join(indented_lines)
     component_code = f"""{import_line}
 
 export default function {pascal}() {{
@@ -1532,7 +1557,8 @@ export default function {pascal}() {{
     with open(c_dir / "index.tsx", "w") as f:
         f.write(component_code)
 
-    _write_css_module(c_dir / "styles.module.css", css_rules)
+    # Edge case: pass nextjs=True so url(assets/...) becomes url(/assets/...)
+    _write_css_module(c_dir / "styles.module.css", css_rules, nextjs=True)
 
 
 def _write_css_module(path, css_rules, nextjs=False):
@@ -1541,8 +1567,8 @@ def _write_css_module(path, css_rules, nextjs=False):
     for selector, props in css_rules.items():
         fixed_props = {}
         for p, v in props.items():
-            # Fix asset paths for Next.js CSS modules (must be absolute from /public)
-            if nextjs and p == "background-image" and "url(assets/" in str(v):
+            # Edge case: Fix asset paths for Next.js CSS modules (must be absolute from /public)
+            if nextjs and "url(assets/" in str(v):
                 v = v.replace("url(assets/", "url(/assets/")
             fixed_props[p] = v
         prop_lines = [f"  {p}: {v};" for p, v in fixed_props.items()]
