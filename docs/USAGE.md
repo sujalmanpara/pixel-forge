@@ -59,7 +59,9 @@ Phase 4: AUTO-REFINE  (automatic, silent — max 3 iterations)
    ↓
 Phase 5: PRESENT ──── CHECKPOINT: STOP and show user results
    ↓ (only if user wants changes)
-Phase 6: POLISH       (targeted fixes based on user feedback)
+Phase 6: FUNCTIONAL   (add interactivity — buttons, routing, forms, state)
+   ↓
+Phase 7: POLISH       (targeted fixes based on user feedback)
    ↓
 DONE: Final code ready
 ```
@@ -221,7 +223,35 @@ python3 $SKILL_DIR/scripts/font-map.py --all
 
 ## Phase 2 — BUILD (automatic, silent)
 
-### 2a — Detect project context
+### 2a — Run generate.py (ALWAYS do this first — zero cost)
+
+```bash
+# Detect framework from Phase 0 discovery, then generate:
+python3 $SKILL_DIR/scripts/generate.py --input ./figma-data/ --output ./output/ --framework nextjs --tailwind
+```
+
+**Framework selection (from Phase 0):**
+| User wants | Command |
+|---|---|
+| Next.js + Tailwind (default) | `--framework nextjs --tailwind` |
+| React | `--framework react` |
+| Plain HTML | `--framework html` |
+
+**What generate.py produces (0 LLM tokens, ~50ms):**
+- Complete project scaffold with proper file structure
+- React/Next.js components split by Figma sections
+- CSS from design tokens (colors, fonts, spacing, shadows)
+- Tailwind config generated from Figma tokens
+- Real image assets linked
+- ~85-90% visual accuracy out of the box
+
+**Why generate.py first:**
+- Deterministic: same input = same output every time
+- Free: zero API calls, zero tokens
+- Fast: 50ms execution
+- LLM then only does JUDGMENT work (what's wrong + how to fix + add functionality)
+
+### 2b — Detect project context (if integrating into existing project)
 
 ```bash
 # Is there an existing project?
@@ -231,14 +261,15 @@ ls package.json tailwind.config.js tsconfig.json 2>/dev/null
 cat package.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(list(d.get('dependencies',{}).keys())[:20])"
 ```
 
-**Decision matrix:**
+**If integrating into existing project:** skip generate.py, instead use extracted tokens to hand-build components that match existing patterns.
+
+**Decision matrix (for existing projects):**
 | Context | Output |
 |---|---|
-| No project found | Standalone `index.html` with inline CSS |
-| React/Next.js + Tailwind | React components with Tailwind classes |
-| React/Next.js (no Tailwind) | React components with CSS modules |
-| Vue | Vue SFC components |
-| Plain HTML project | HTML + CSS file |
+| No project found | Use generate.py output directly |
+| React/Next.js + Tailwind | Use generate.py `--nextjs --tailwind`, merge into project |
+| React/Next.js (no Tailwind) | Use generate.py `--react`, adapt CSS |
+| Vue | Generate HTML, manually convert (Vue not yet supported) |
 | Existing design system | Extend existing tokens, follow naming conventions |
 
 ### 2b — Generate code
@@ -335,8 +366,10 @@ REPEAT up to 3 times:
 **Quality Gate Rules:**
 - NEVER present to user below 75% overall match — keep refining
 - NEVER exceed 3 auto-refinement iterations — present best result regardless
-- Only fix sections scoring below 85%
+- Only fix sections scoring below 80%
 - Each pass focuses on max 3 sections (targeted, not full rebuild)
+- **STOP visual refinement at 85%+ overall** — remaining gap is usually rendering engine differences
+- After 85%+, move to Phase 6 (functionality) immediately
 
 **Common fixes by issue type:**
 
@@ -400,7 +433,69 @@ on the Hero section, or should we continue from here?
 
 ---
 
-## Phase 6 — USER FEEDBACK POLISH (only if user wants changes)
+## Phase 6 — FUNCTIONAL (add interactivity)
+
+**After visual accuracy hits 85%+, shift focus to making it WORK.**
+
+Visual accuracy above 85% is "good enough" for most production use. The remaining 5-15% gap is often unfixable rendering engine differences (Figma vs browser). Don't waste tokens chasing pixel-perfect when the app has dead buttons.
+
+### Priority Order (STRICT)
+
+| Priority | What | Token budget |
+|----------|------|-------------|
+| **P0** | Buttons/links clickable | 10-20% |
+| **P1** | Navigation/routing works | 10-20% |
+| **P2** | Forms submit + validate | 10-20% |
+| **P3** | Hover/active states | 10% |
+| **P4** | Animations/transitions | 5% |
+| **P5** | Pixel-perfect visual polish | Remaining |
+
+### What to add (based on Figma context)
+
+**Detect from node names + structure:**
+- Nodes named "Button", "CTA", "Link" → add `onClick`, `href`, cursor pointer
+- Nodes named "Nav", "Navbar", "Menu" → add navigation links
+- Nodes named "Input", "Search", "Field" → add `<input>` with placeholder
+- Nodes named "Card" with links → make entire card clickable
+- Nodes named "Tab", "Filter" → add tab switching state
+- Pagination components → add page state + handlers
+
+**Add basic interactions:**
+```tsx
+// Buttons
+<button onClick={() => {}} className="cursor-pointer hover:opacity-80 transition">
+
+// Links
+<a href="#section" className="hover:underline">
+
+// Cards
+<div className="cursor-pointer hover:shadow-lg transition-shadow">
+
+// Inputs
+<input type="text" placeholder="Search..." className="focus:ring-2" />
+```
+
+**Framework-specific routing:**
+- Next.js: Use `<Link href="/page">` from `next/link`
+- React: Use `react-router-dom` or anchor tags
+- HTML: Standard `<a href="#">`
+
+### Anti-pattern: DON'T do this
+
+❌ Spending 3+ iterations chasing 90% pixel score when buttons don't work
+❌ Obsessing over image rendering differences (Chrome ≠ Figma, that's normal)
+❌ Burning 40k+ tokens on visual refinement while app has zero interactivity
+
+### Do this instead
+
+✅ Hit 85%+ visual → stop visual refinement
+✅ Spend tokens on making the app FUNCTIONAL
+✅ One quick visual pass (max 1 iteration) for obvious layout issues
+✅ Accept that image rendering will always differ by 5-10% between tools
+
+---
+
+## Phase 7 — USER FEEDBACK POLISH (only if user wants changes)
 
 Accept any of these responses and act accordingly:
 
@@ -408,6 +503,7 @@ Accept any of these responses and act accordingly:
 |-----------|--------|
 | "ship it" / "looks good" / "done" | Deliver final code. Done. |
 | "fix the footer" | Targeted fix on footer only. Re-validate. Re-present scores. |
+| "make buttons work" | Add interactivity to buttons (Phase 6). |
 | "refine more" | One more auto-refinement pass (same loop as Phase 4). |
 | Specific feedback | Apply the exact change. Re-validate. Re-present. |
 
@@ -419,6 +515,23 @@ Accept any of these responses and act accordingly:
 ---
 
 ## Quick Reference — All Scripts
+
+### generate.py (ZERO LLM tokens — algorithmic baseline)
+```bash
+# HTML output (default)
+python3 $SKILL_DIR/scripts/generate.py --input ./figma-data/ --output ./output/
+
+# React components
+python3 $SKILL_DIR/scripts/generate.py --input ./figma-data/ --output ./output/ --framework react
+
+# Next.js + Tailwind (recommended)
+python3 $SKILL_DIR/scripts/generate.py --input ./figma-data/ --output ./output/ --framework nextjs --tailwind
+```
+
+**Frameworks:** `html` (default), `react`, `nextjs`
+**Tailwind:** Add `--tailwind` to generate utility classes + `tailwind.config.ts`
+**Speed:** ~50ms, deterministic, same input = same output every time
+**Accuracy:** 85-90% visual match without any LLM
 
 ### extract.py
 ```bash

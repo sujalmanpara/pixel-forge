@@ -1,28 +1,16 @@
 #!/usr/bin/env python3
 """
-PixelForge: validate.py
-Automated visual validation — screenshots your rendered page and pixel-diffs it
-against Figma reference screenshots. Outputs a structured JSON report with per-section scores.
+validate-loop.py — Automated visual validation for figma-perfect skill.
+
+Screenshots the rendered page via camoufox, pixel-diffs it against Figma
+reference screenshots, and outputs a structured JSON report.
 
 Usage:
-    python3 validate.py \
+    python3 validate-loop.py \
         --url "http://localhost:3088" \
         --screenshots ./figma-data/screenshots/ \
         --output ./figma-data/validation/ \
         --iteration 1
-
-    # Custom viewport (default: 1920px — match your Figma canvas width)
-    python3 validate.py \
-        --url "http://localhost:3088" \
-        --screenshots ./figma-data/screenshots/ \
-        --output ./figma-data/validation/ \
-        --iteration 2 \
-        --viewport-width 1440
-
-Screenshot tool priority: Puppeteer → Playwright → any tool at SCREENSHOT_TOOL env var
-Install one:
-    npm i puppeteer                                    # Node.js
-    pip install playwright && playwright install chromium  # Python
 
 Dependencies: Pillow (PIL), subprocess (stdlib)
 """
@@ -39,20 +27,23 @@ from pathlib import Path
 try:
     from PIL import Image, ImageChops, ImageDraw
 except ImportError:
-    print("[validate] Installing Pillow…")
+    print("[validate-loop] Installing Pillow…")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow", "-q"])
     from PIL import Image, ImageChops, ImageDraw
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-THRESHOLD_PASS = 85.0       # section >= 85 → PASS
-THRESHOLD_WARN = 70.0       # section >= 70 → WARN  (else FAIL)
-THRESHOLD_READY = 90.0      # overall >= 90 → READY_FOR_REVIEW
-THRESHOLD_NEEDS = 75.0      # overall >= 75 → NEEDS_REFINEMENT  (else MAJOR_ISSUES)
+THRESHOLD_PASS = 80.0      # section >= 80 → PASS
+THRESHOLD_WARN = 65.0      # section >= 65 → WARN  (else FAIL)
+THRESHOLD_READY = 85.0     # overall >= 85 → READY_FOR_REVIEW (stop visual, move to functionality)
+THRESHOLD_NEEDS = 70.0     # overall >= 70 → NEEDS_REFINEMENT  (else MAJOR_ISSUES)
 MAX_ITERATIONS = 3
-DEFAULT_VIEWPORT_WIDTH = 1920
+DEFAULT_VIEWPORT_WIDTH = 1920   # Fixed viewport for consistent screenshots
 DEFAULT_VIEWPORT_HEIGHT = 1080
+CAMOUFOX_SCRIPT = os.path.expanduser(
+    "~/.openclaw/workspace/skills/camoufox-browser/scripts/browse.py"
+)
 
-# ─── Inline browser scripts ───────────────────────────────────────────────────
+# ─── Screenshot helper (inline Puppeteer script) ─────────────────────────────
 
 _PUPPETEER_SCRIPT = '''
 const puppeteer = require('puppeteer');
@@ -92,21 +83,10 @@ asyncio.run(main())
 '''
 
 
-# ─── Screenshot detection ─────────────────────────────────────────────────────
+# ─── Screenshot — browser-agnostic with fixed viewport ────────────────────────
 
 def _detect_screenshot_method() -> str:
-    """
-    Detect which screenshot tool is available.
-    Priority: SCREENSHOT_TOOL env var → puppeteer → playwright → none
-
-    Set SCREENSHOT_TOOL=/path/to/your/script to use any custom browser automation tool.
-    The tool is called as: <tool> <url> <output_path> [<viewport_width>]
-    """
-    # Allow custom override via env var
-    custom_tool = os.environ.get("SCREENSHOT_TOOL")
-    if custom_tool and Path(custom_tool).exists():
-        return f"custom:{custom_tool}"
-
+    """Detect which screenshot tool is available. Priority: puppeteer > playwright > camoufox."""
     # Check Puppeteer
     try:
         r = subprocess.run(["node", "-e", "require('puppeteer')"], capture_output=True, timeout=10)
@@ -123,30 +103,27 @@ def _detect_screenshot_method() -> str:
     except subprocess.TimeoutExpired:
         pass
 
+    # Fallback to camoufox
+    if Path(CAMOUFOX_SCRIPT).exists():
+        return "camoufox"
+
     return "none"
 
 
 def take_screenshot(url: str, output_path: str, viewport_width: int = DEFAULT_VIEWPORT_WIDTH, retries: int = 1) -> bool:
     """
     Screenshot a URL with a FIXED viewport width.
-    Tries: Puppeteer → Playwright → custom SCREENSHOT_TOOL env var.
+    Tries: Puppeteer → Playwright → Camoufox (in priority order).
     Fixed viewport ensures consistent screenshots for pixel diffing.
     """
     method = _detect_screenshot_method()
-    print(f"[validate] Screenshot method: {method} (viewport: {viewport_width}px)")
-
-    if method == "none":
-        print("[validate] ERROR: No screenshot tool found!")
-        print("[validate] Install one:")
-        print("[validate]   npm i puppeteer")
-        print("[validate]   pip install playwright && playwright install chromium")
-        print("[validate]   export SCREENSHOT_TOOL=/path/to/your/screenshot/script")
-        return False
+    print(f"[validate-loop] Screenshot method: {method} (viewport: {viewport_width}px)")
 
     for attempt in range(retries + 1):
         success = False
         try:
             if method == "puppeteer":
+                # Write temp script and run with node
                 tmp_script = Path(output_path).parent / "_screenshot.js"
                 tmp_script.write_text(_PUPPETEER_SCRIPT)
                 result = subprocess.run(
@@ -166,24 +143,32 @@ def take_screenshot(url: str, output_path: str, viewport_width: int = DEFAULT_VI
                 tmp_script.unlink(missing_ok=True)
                 success = result.returncode == 0 and Path(output_path).exists()
 
-            elif method.startswith("custom:"):
-                tool_path = method.split(":", 1)[1]
-                result = subprocess.run(
-                    [tool_path, url, output_path, str(viewport_width)],
-                    capture_output=True, text=True, timeout=120
-                )
+            elif method == "camoufox":
+                cmd = [
+                    sys.executable, CAMOUFOX_SCRIPT,
+                    "screenshot", url,
+                    "-o", output_path,
+                    "--full-page", "--wait", "3",
+                    "--viewport-width", str(viewport_width),
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 success = result.returncode == 0 and Path(output_path).exists()
+
+            else:
+                print("[validate-loop] ERROR: No screenshot tool found!")
+                print("[validate-loop] Install one: npm i puppeteer | pip install playwright | camoufox skill")
+                return False
 
             if success:
                 return True
 
         except subprocess.TimeoutExpired:
-            print(f"[validate] Screenshot timed out (attempt {attempt + 1})")
+            print(f"[validate-loop] Screenshot timed out (attempt {attempt + 1})")
         except Exception as e:
-            print(f"[validate] Screenshot error: {e}")
+            print(f"[validate-loop] Screenshot error: {e}")
 
         if attempt < retries:
-            print(f"[validate] Retrying ({attempt + 1}/{retries})…")
+            print(f"[validate-loop] Retrying ({attempt + 1}/{retries})…")
 
     return False
 
@@ -208,13 +193,14 @@ def pixel_match_percent(img_a: Image.Image, img_b: Image.Image) -> tuple:
     img_a, img_b = resize_to_match(img_a, img_b)
 
     diff = ImageChops.difference(img_a, img_b)
-    diff_data = list(diff.getdata())
+    diff_data = list(diff.getdata())  # TODO: migrate to get_flattened_data() when Pillow 14 lands
 
     total_pixels = len(diff_data)
     if total_pixels == 0:
         return 100.0, diff
 
-    tolerance = 10  # tolerance for anti-aliasing
+    # Pixels are "different" if any channel delta > 10 (tolerance for anti-aliasing)
+    tolerance = 10
     different = sum(
         1 for r, g, b in diff_data
         if r > tolerance or g > tolerance or b > tolerance
@@ -222,7 +208,7 @@ def pixel_match_percent(img_a: Image.Image, img_b: Image.Image) -> tuple:
 
     match_pct = round((1.0 - different / total_pixels) * 100, 2)
 
-    # Build highlighted diff image (red = different pixels)
+    # Build a highlighted diff image (red = different)
     diff_vis = img_a.copy().convert("RGBA")
     draw = ImageDraw.Draw(diff_vis)
     w, h = diff_vis.size
@@ -249,21 +235,22 @@ def score_sections(
 ) -> list:
     """
     Divide the page screenshot into N strips matching the N reference screenshots.
-    Uses PROPORTIONAL heights based on each reference's actual height.
+    Uses PROPORTIONAL heights based on each reference screenshot's actual height,
+    not equal strips (which fails when sections differ wildly in size).
     """
     sections = []
     n = len(ref_screenshots)
     if n == 0:
         return sections
 
-    # Calculate proportional strip heights
+    # Calculate proportional strip heights based on reference screenshot dimensions
     ref_heights = []
     for ref_path in ref_screenshots:
         try:
             with Image.open(ref_path) as rimg:
                 ref_heights.append(rimg.height)
         except Exception:
-            ref_heights.append(100)
+            ref_heights.append(100)  # fallback
 
     total_ref_height = sum(ref_heights)
     page_h = page_img.height
@@ -273,17 +260,18 @@ def score_sections(
 
     cumulative_y = 0
     for i, ref_path in enumerate(ref_screenshots):
-        section_name = Path(ref_path).stem
+        section_name = Path(ref_path).stem  # e.g. "section-01-Hero"
+        # Proportional strip height based on reference image ratio
         proportion = ref_heights[i] / total_ref_height if total_ref_height > 0 else 1.0 / n
         strip_h = int(page_h * proportion)
         y_start = cumulative_y
-        y_end = cumulative_y + strip_h if i < n - 1 else page_h
+        y_end = cumulative_y + strip_h if i < n - 1 else page_h  # last section gets remainder
         cumulative_y = y_end
 
         try:
             ref_img = Image.open(ref_path).convert("RGB")
         except Exception as e:
-            print(f"[validate] Could not open {ref_path}: {e}")
+            print(f"[validate-loop] Could not open {ref_path}: {e}")
             sections.append({
                 "name": section_name,
                 "match": 0.0,
@@ -296,9 +284,11 @@ def score_sections(
         page_strip = crop_strip(page_img, y_start, y_end)
         match_pct, diff_img = pixel_match_percent(page_strip, ref_img)
 
+        # Save section diff image
         diff_path = diff_dir / f"{section_name}-diff.png"
         diff_img.save(str(diff_path))
 
+        # Determine status
         if match_pct >= THRESHOLD_PASS:
             status = "PASS"
             priority = None
@@ -344,8 +334,7 @@ def main():
     parser.add_argument("--output", required=True, help="Directory to write validation results")
     parser.add_argument("--iteration", type=int, default=1, help="Current refinement iteration (1–3)")
     parser.add_argument("--threshold", type=float, default=THRESHOLD_READY, help="Pass threshold (default 90)")
-    parser.add_argument("--viewport-width", type=int, default=DEFAULT_VIEWPORT_WIDTH,
-                        help="Fixed viewport width for screenshot (default 1920)")
+    parser.add_argument("--viewport-width", type=int, default=DEFAULT_VIEWPORT_WIDTH, help="Fixed viewport width for screenshot (default 1920)")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
@@ -355,23 +344,27 @@ def main():
 
     screenshots_dir = Path(args.screenshots)
     if not screenshots_dir.exists():
-        print(f"[validate] ERROR: Screenshots directory not found: {screenshots_dir}")
+        print(f"[validate-loop] ERROR: Screenshots directory not found: {screenshots_dir}")
         sys.exit(1)
 
+    # Collect reference screenshots (sorted, skip full.png for section scoring)
     all_refs = sorted(screenshots_dir.glob("*.png"))
     full_ref = next((p for p in all_refs if p.stem == "full"), None)
+    # Only include files that look like section screenshots (section-NN-*)
+    # Skip full.png, diff images, render images, and any other non-section files
     section_refs = [p for p in all_refs if p.stem != "full" and p.stem.startswith("section-")]
 
     if not all_refs:
-        print("[validate] ERROR: No reference screenshots found. Did extract.py run?")
+        print("[validate-loop] ERROR: No reference screenshots found. Did extract.py run?")
         sys.exit(1)
 
-    print(f"[validate] Taking screenshot of {args.url} (viewport: {args.viewport_width}px)…")
+    print(f"[validate-loop] Taking screenshot of {args.url} (viewport: {args.viewport_width}px)…")
     page_shot_path = str(output_dir / "page-current.png")
     ok = take_screenshot(args.url, page_shot_path, viewport_width=args.viewport_width)
 
     if not ok:
-        print("[validate] ERROR: Failed to screenshot page after retries.")
+        print("[validate-loop] ERROR: Failed to screenshot page after retries.")
+        # Write a minimal error report so the agent can handle it
         report = {
             "error": "screenshot_failed",
             "url": args.url,
@@ -379,6 +372,7 @@ def main():
         }
         report_path = output_dir / "report.json"
         report_path.write_text(json.dumps(report, indent=2))
+        print(f"[validate-loop] Error report → {report_path}")
         sys.exit(2)
 
     page_img = Image.open(page_shot_path).convert("RGB")
@@ -387,17 +381,17 @@ def main():
     full_match = None
     full_diff_path = None
     if full_ref:
-        print(f"[validate] Diffing full page against {full_ref.name} …")
+        print(f"[validate-loop] Diffing full page against {full_ref.name} …")
         ref_img = Image.open(full_ref).convert("RGB")
         full_match, full_diff_img = pixel_match_percent(page_img, ref_img)
         full_diff_path = str(diff_dir / "full-diff.png")
         full_diff_img.save(full_diff_path)
-        print(f"[validate] Full-page match: {full_match}%")
+        print(f"[validate-loop] Full-page match: {full_match}%")
     else:
-        print("[validate] No full.png reference — using section averages only.")
+        print("[validate-loop] No full.png reference found — using section averages only.")
 
     # ── Per-section diff ──
-    print(f"[validate] Scoring {len(section_refs)} sections …")
+    print(f"[validate-loop] Scoring {len(section_refs)} sections …")
     sections = score_sections(page_img, section_refs, output_dir)
 
     # ── Overall score ──
@@ -407,6 +401,7 @@ def main():
         avg_section = None
 
     if full_match is not None and avg_section is not None:
+        # Blend full-page (60%) and section average (40%)
         overall = round(full_match * 0.6 + avg_section * 0.4, 2)
     elif full_match is not None:
         overall = round(full_match, 2)
@@ -417,6 +412,7 @@ def main():
 
     status = overall_status(overall, args.iteration)
 
+    # Worst sections (FAIL first, then WARN, sorted by match asc)
     failing = sorted([s for s in sections if s["status"] == "FAIL"], key=lambda x: x["match"])
     warning = sorted([s for s in sections if s["status"] == "WARN"], key=lambda x: x["match"])
     worst = [s["name"] for s in failing[:3]] + [s["name"] for s in warning[:2]]
@@ -429,21 +425,20 @@ def main():
         "iteration": args.iteration,
         "max_iterations": MAX_ITERATIONS,
         "threshold": args.threshold,
-        "diff_image": full_diff_path or None,
+        "diff_image": full_diff_path or (str(diff_dir / "section-diffs") if sections else None),
         "page_screenshot": page_shot_path,
     }
 
     report_path = output_dir / "report.json"
     report_path.write_text(json.dumps(report, indent=2))
-
-    print(f"\n[validate] ─────────────────────────────────────")
-    print(f"[validate] Overall match : {overall}%")
-    print(f"[validate] Status        : {status}")
-    print(f"[validate] Sections      : {len(sections)} scored")
+    print(f"\n[validate-loop] ─────────────────────────────────────")
+    print(f"[validate-loop] Overall match : {overall}%")
+    print(f"[validate-loop] Status        : {status}")
+    print(f"[validate-loop] Sections      : {len(sections)} scored")
     if worst:
-        print(f"[validate] Worst sections: {', '.join(worst)}")
-    print(f"[validate] Report        → {report_path}")
-    print(f"[validate] ─────────────────────────────────────\n")
+        print(f"[validate-loop] Worst sections: {', '.join(worst)}")
+    print(f"[validate-loop] Report        → {report_path}")
+    print(f"[validate-loop] ─────────────────────────────────────\n")
 
     return 0
 
