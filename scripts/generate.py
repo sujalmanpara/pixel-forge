@@ -17,6 +17,166 @@ from collections import OrderedDict
 from pathlib import Path
 
 
+# ─── Google Fonts validation ──────────────────────────────────────────────
+
+GOOGLE_FONTS_WEIGHTS = {
+    'Inter': [100, 200, 300, 400, 500, 600, 700, 800, 900],
+    'Sora': [100, 200, 300, 400, 500, 600, 700, 800],
+    'Poppins': [100, 200, 300, 400, 500, 600, 700, 800, 900],
+    'Roboto': [100, 300, 400, 500, 700, 900],
+    'Open Sans': [300, 400, 500, 600, 700, 800],
+    'Montserrat': [100, 200, 300, 400, 500, 600, 700, 800, 900],
+    'Lato': [100, 300, 400, 700, 900],
+    'Oswald': [200, 300, 400, 500, 600, 700],
+    'Raleway': [100, 200, 300, 400, 500, 600, 700, 800, 900],
+    'Nunito': [200, 300, 400, 500, 600, 700, 800, 900],
+    'Nunito Sans': [200, 300, 400, 500, 600, 700, 800, 900],
+    'Ubuntu': [300, 400, 500, 700],
+    'Playfair Display': [400, 500, 600, 700, 800, 900],
+    'Merriweather': [300, 400, 700, 900],
+    'Work Sans': [100, 200, 300, 400, 500, 600, 700, 800, 900],
+    'DM Sans': [100, 200, 300, 400, 500, 600, 700, 800, 900],
+    'Space Grotesk': [300, 400, 500, 600, 700],
+    'Outfit': [100, 200, 300, 400, 500, 600, 700, 800, 900],
+    'Plus Jakarta Sans': [200, 300, 400, 500, 600, 700, 800],
+    'Manrope': [200, 300, 400, 500, 600, 700, 800],
+    'Figtree': [300, 400, 500, 600, 700, 800, 900],
+    'Barlow': [100, 200, 300, 400, 500, 600, 700, 800, 900],
+    'Source Sans 3': [200, 300, 400, 500, 600, 700, 800, 900],
+    'Russo One': [400],
+    'Bebas Neue': [400],
+    'Syne': [400, 500, 600, 700, 800],
+    'JetBrains Mono': [100, 200, 300, 400, 500, 600, 700, 800],
+    'IBM Plex Sans': [100, 200, 300, 400, 500, 600, 700],
+    'Fira Code': [300, 400, 500, 600, 700],
+}
+
+DEFAULT_FONT_WEIGHTS = [400, 500, 600, 700]
+
+# Load font-map.json for non-Google font substitution
+_FONT_MAP_PATH = Path(__file__).parent.parent / "references" / "font-map.json"
+_FONT_MAP_CACHE = None
+
+def _load_font_map():
+    """Load font-map.json, falling back to hardcoded subset."""
+    global _FONT_MAP_CACHE
+    if _FONT_MAP_CACHE is not None:
+        return _FONT_MAP_CACHE
+    if _FONT_MAP_PATH.exists():
+        try:
+            with open(_FONT_MAP_PATH) as f:
+                _FONT_MAP_CACHE = json.load(f)
+        except Exception:
+            _FONT_MAP_CACHE = {}
+    else:
+        # Hardcoded fallback subset
+        _FONT_MAP_CACHE = {
+            'Vastago Grotesk': 'Sora',
+            'Ethnocentric': 'Russo One',
+            'SF Pro Display': 'Inter',
+            'SF Pro Text': 'Inter',
+            'Helvetica Neue': 'Inter',
+            'Helvetica': 'Inter',
+            'Futura': 'Poppins',
+            'Gotham': 'Montserrat',
+            'Proxima Nova': 'Montserrat',
+            'Circular': 'DM Sans',
+            'Gilroy': 'Outfit',
+            'Satoshi': 'DM Sans',
+            'Geist': 'Inter',
+            'Geist Mono': 'JetBrains Mono',
+        }
+    return _FONT_MAP_CACHE
+
+
+def _is_google_font(family):
+    """Check if a font family is available on Google Fonts."""
+    # If it's in our weights map, it's definitely on Google Fonts
+    if family in GOOGLE_FONTS_WEIGHTS:
+        return True
+    # Check font map — if it's a KEY in the map, it's NOT on Google Fonts
+    font_map = _load_font_map()
+    if family in font_map:
+        return False
+    # Check if it's a VALUE in the map (i.e., a Google Font used as substitute)
+    if family in font_map.values():
+        return True
+    # Common web-safe fonts (not Google but handled separately)
+    web_safe = {'Arial', 'Helvetica', 'Times New Roman', 'Georgia', 'Verdana', 'Courier New', 'Segoe UI'}
+    if family in web_safe:
+        return True  # Not Google, but safe — they get filtered out elsewhere
+    # Default: assume it's on Google Fonts (may fail, but better than false negative)
+    return True
+
+
+def _get_google_font_substitute(family):
+    """Get a Google Fonts substitute for a non-Google font. Returns (substitute, comment) or (None, None)."""
+    font_map = _load_font_map()
+    if family in font_map:
+        sub = font_map[family]
+        return sub, f"/* Font substitution: {family} \u2192 {sub} (not on Google Fonts) */"
+    return 'Inter', f"/* Font substitution: {family} \u2192 Inter (not on Google Fonts) */"
+
+
+def _clamp_font_weight(family, weight):
+    """Clamp a font weight to the nearest available weight for the font."""
+    available = GOOGLE_FONTS_WEIGHTS.get(family, DEFAULT_FONT_WEIGHTS)
+    # Find nearest
+    return min(available, key=lambda w: abs(w - weight))
+
+
+def _get_valid_weights_for_font(family):
+    """Get list of valid weight strings for a font."""
+    available = GOOGLE_FONTS_WEIGHTS.get(family, DEFAULT_FONT_WEIGHTS)
+    return [str(w) for w in available]
+
+
+# ─── String escaping for generated TS/JS ──────────────────────────────────
+
+def escape_ts_string(text):
+    """Escape text for safe embedding in single-quoted TypeScript/JavaScript strings.
+    
+    Handles smart quotes, backslashes, newlines, and regular quotes that would break
+    string literals in generated code.
+    """
+    if not text:
+        return text
+    # Escape backslashes first
+    text = text.replace('\\', '\\\\')
+    # Replace smart/curly quotes with straight equivalents
+    text = text.replace('\u2019', "'")   # ’ right single quotation mark
+    text = text.replace('\u2018', "'")   # ‘ left single quotation mark  
+    text = text.replace('\u201C', '"')   # “ left double quotation mark
+    text = text.replace('\u201D', '"')   # ” right double quotation mark
+    # Escape newlines and tabs
+    text = text.replace('\n', ' ')
+    text = text.replace('\r', '')
+    text = text.replace('\t', ' ')
+    # Escape single quotes (for single-quoted strings)
+    text = text.replace("'", "\\'")
+    return text
+
+
+def escape_jsx_attr(text):
+    """Escape text for safe embedding in double-quoted JSX attribute values."""
+    if not text:
+        return text
+    # Escape backslashes first
+    text = text.replace('\\', '\\\\')
+    # Replace smart/curly quotes with straight equivalents
+    text = text.replace('\u2019', "'")   # ’ right single quotation mark
+    text = text.replace('\u2018', "'")   # ‘ left single quotation mark
+    text = text.replace('\u201C', '"')   # “ left double quotation mark  
+    text = text.replace('\u201D', '"')   # ” right double quotation mark
+    # Escape newlines
+    text = text.replace('\n', ' ')
+    text = text.replace('\r', '')
+    text = text.replace('\t', ' ')
+    # Escape double quotes (for double-quoted attributes)
+    text = text.replace('"', '&quot;')
+    return text
+
+
 # ─── Helpers ───────────────────────────────────────────────────────────────
 
 def rgba_from_figma(color, alpha_override=None):
@@ -1450,6 +1610,62 @@ def _write_nextjs_config_files(output_dir, app_dir, collector, use_tailwind, tit
         f.write('/** @type {import(\'next\').NextConfig} */\nconst nextConfig = {};\nmodule.exports = nextConfig;\n')
 
 
+def _generate_font_config(collector):
+    """Generate font imports, vars, and classNames for layout.tsx.
+    
+    Handles:
+    - Non-Google fonts: substitutes via font-map.json or falls back to Inter
+    - Invalid weights: clamps to nearest available weight for each font
+    
+    Returns (font_imports_str, font_vars_str, font_class_names_str, font_comments: list[str])
+    """
+    font_families = list(collector.fonts.keys())
+    # Filter out web-safe fonts that don't need Google Fonts
+    candidate_fonts = [f for f in font_families if f.lower() not in 
+                       ("arial", "helvetica", "times new roman", "georgia", "verdana", "courier new", "segoe ui")]
+    
+    if not candidate_fonts:
+        return "", "", "", []
+    
+    font_import_lines = []
+    font_var_lines = []
+    font_cn_parts = []
+    font_comments = []
+    seen_imports = set()  # avoid duplicate imports after substitution
+    
+    for gf in candidate_fonts:
+        actual_font = gf
+        
+        # Bug 4 fix: Check if font is on Google Fonts
+        if not _is_google_font(gf):
+            sub, comment = _get_google_font_substitute(gf)
+            font_comments.append(comment)
+            actual_font = sub
+        
+        # Skip if we already imported this font (after substitution)
+        if actual_font in seen_imports:
+            continue
+        seen_imports.add(actual_font)
+        
+        var_name = actual_font.lower().replace(" ", "_")
+        import_name = actual_font.replace(' ', '_')
+        
+        # Bug 3 fix: Get valid weights for this font
+        valid_weights = _get_valid_weights_for_font(actual_font)
+        weights_str = ", ".join(f"'{w}'" for w in valid_weights)
+        
+        font_import_lines.append(f"import {{ {import_name} }} from 'next/font/google';")
+        font_var_lines.append(f"const {var_name} = {import_name}({{ subsets: ['latin'], weight: [{weights_str}] }});")
+        font_cn_parts.append(f"${{{var_name}.className}}")
+    
+    return (
+        "\n".join(font_import_lines),
+        "\n".join(font_var_lines),
+        " ".join(font_cn_parts),
+        font_comments,
+    )
+
+
 def generate_nextjs_output(root, collector, assets_dir, output_dir, use_tailwind=False, title="Generated App", responsive=False):
     """Generate Next.js App Router project."""
     output_dir = Path(output_dir)
@@ -1546,33 +1762,17 @@ export default function {pascal}() {{
             _write_nextjs_component(c_dir, pascal, tsx_body, css_rules, use_tailwind)
 
     # Generate app/layout.tsx
-    font_families = list(collector.fonts.keys())
-    google_fonts = [f for f in font_families if f.lower() not in ("arial", "helvetica", "times new roman", "georgia", "verdana", "courier new", "segoe ui")]
-
-    font_imports = ""
-    font_vars = ""
-    font_class_names = ""
-    if google_fonts:
-        font_import_lines = []
-        font_var_lines = []
-        font_cn_parts = []
-        for gf in google_fonts:
-            var_name = gf.lower().replace(" ", "_")
-            font_import_lines.append(f"import {{ {gf.replace(' ', '_')} }} from 'next/font/google';")
-            font_var_lines.append(f"const {var_name} = {gf.replace(' ', '_')}({{ subsets: ['latin'], weight: ['300', '400', '500', '600', '700', '800'] }});")
-            font_cn_parts.append(f"${{{var_name}.className}}")
-        font_imports = "\n".join(font_import_lines)
-        font_vars = "\n".join(font_var_lines)
-        font_class_names = " ".join(font_cn_parts)
+    font_imports, font_vars, font_class_names, font_comments = _generate_font_config(collector)
+    font_comments_str = "\n".join(font_comments) + "\n" if font_comments else ""
 
     layout_tsx = f"""import type {{ Metadata }} from 'next';
 import './globals.css';
 {font_imports}
 
-{font_vars}
+{font_comments_str}{font_vars}
 
 export const metadata: Metadata = {{
-  title: '{title}',
+  title: '{escape_ts_string(title)}',
   description: 'Generated by figma-perfect',
 }};
 
@@ -2003,14 +2203,14 @@ def _smart_render(node, parent, collector, assets_dir, css_rules, depth=0,
             if node_id in pat['node_ids']:
                 for inst in pat['instances']:
                     if inst['nodeId'] == node_id:
-                        ps = " ".join(f'{k}="{v}"' for k, v in inst['data'].items())
+                        ps = " ".join(f'{k}="{escape_jsx_attr(v)}"' for k, v in inst['data'].items())
                         return f'{indent}<{pat["component_name"]} {ps} />\n'
                 break
         for cid, pat in analysis['component_instances'].items():
             if node_id in pat['node_ids']:
                 for inst in pat['instances']:
                     if inst['nodeId'] == node_id:
-                        ps = " ".join(f'{k}="{v}"' for k, v in inst['data'].items())
+                        ps = " ".join(f'{k}="{escape_jsx_attr(v)}"' for k, v in inst['data'].items())
                         if ps:
                             return f'{indent}<{pat["component_name"]} {ps} />\n'
                         break
@@ -2205,6 +2405,9 @@ def generate_smart_nextjs(root, collector, assets_dir, output_dir, use_tailwind=
         })
     
     # ─── Generate section components ───
+    # Collect shared component names to check for collisions
+    shared_component_names = set(sc['name'] for sc in shared_components)
+    
     section_components = []
     seen_names = set()
     for child in root.get('children', []):
@@ -2215,6 +2418,9 @@ def generate_smart_nextjs(root, collector, assets_dir, output_dir, use_tailwind=
         while pascal in seen_names:
             counter += 1
             pascal = f"{base}{counter}"
+        # Bug fix: if section name collides with a shared component name, append 'Section'
+        if pascal in shared_component_names:
+            pascal = f"{pascal}Section"
         seen_names.add(pascal)
         
         css_rules = OrderedDict()
@@ -2268,34 +2474,17 @@ export default function {pascal}() {{
     
     # ─── Generate app files ───
     # layout.tsx
-    font_families = list(collector.fonts.keys())
-    google_fonts = [f for f in font_families if f.lower() not in 
-                    ("arial", "helvetica", "times new roman", "georgia", "verdana", "courier new", "segoe ui")]
-    
-    font_imports = ""
-    font_vars = ""
-    font_class_names = ""
-    if google_fonts:
-        font_import_lines = []
-        font_var_lines = []
-        font_cn_parts = []
-        for gf in google_fonts:
-            var_name = gf.lower().replace(" ", "_")
-            font_import_lines.append(f"import {{ {gf.replace(' ', '_')} }} from 'next/font/google';")
-            font_var_lines.append(f"const {var_name} = {gf.replace(' ', '_')}({{ subsets: ['latin'], weight: ['300', '400', '500', '600', '700', '800'] }});")
-            font_cn_parts.append(f"${{{var_name}.className}}")
-        font_imports = "\n".join(font_import_lines)
-        font_vars = "\n".join(font_var_lines)
-        font_class_names = " ".join(font_cn_parts)
+    font_imports, font_vars, font_class_names, font_comments = _generate_font_config(collector)
+    font_comments_str = "\n".join(font_comments) + "\n" if font_comments else ""
     
     layout_tsx = f"""import type {{ Metadata }} from 'next';
 import './globals.css';
 {font_imports}
 
-{font_vars}
+{font_comments_str}{font_vars}
 
 export const metadata: Metadata = {{
-  title: '{title}',
+  title: '{escape_ts_string(title)}',
   description: 'Generated by figma-perfect',
 }};
 
@@ -2355,7 +2544,7 @@ def _generate_data_file(var_name, prop_names, prop_types, instances_data):
     for data in instances_data:
         props = []
         for pname in prop_names:
-            val = data.get(pname, '').replace("'", "\\'")
+            val = escape_ts_string(data.get(pname, ''))
             props.append(f"    {pname}: '{val}'")
         items.append("  {\n" + ",\n".join(props) + "\n  }")
     

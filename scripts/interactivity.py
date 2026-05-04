@@ -467,12 +467,27 @@ def find_files_with_pattern(project_dir, pattern):
 
 
 def find_node_in_files(project_dir, node):
-    """Find which file(s) contain references to this node's CSS class."""
+    """Find which file(s) contain references to this node's CSS class.
+    
+    Uses the node ID portion of the class name for matching to avoid
+    false positives when multiple nodes have similar names (e.g., many 'Link' nodes).
+    """
     cls = sanitize_class(node)
     camel = to_camel(cls)
+    # Extract the ID portion for more precise matching
+    nid = node.get("id", "0-0").replace(":", "-").replace(";", "-")
+    nid = "".join(c if c.isalnum() or c == "-" else "-" for c in nid)
+    
     files = set()
+    # First try matching the full class name (most precise)
     for pattern in [cls, camel]:
         files.update(find_files_with_pattern(project_dir, pattern))
+    
+    # If no match with full class, try matching by ID portion only
+    # This handles cases where the class was truncated
+    if not files and nid and nid != "0-0":
+        files.update(find_files_with_pattern(project_dir, nid))
+    
     return list(files), cls, camel
 
 
